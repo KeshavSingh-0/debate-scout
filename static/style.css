@@ -172,6 +172,80 @@ button:disabled {
   gap: 0.6rem;
 }
 
+.run-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.25rem;
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.stage-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.88rem;
+}
+
+.stage-icon {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--queued);
+  flex-shrink: 0;
+}
+
+.stage-row[data-status="running"] .stage-icon {
+  background: var(--working);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+.stage-row[data-status="success"] .stage-icon {
+  background: var(--done);
+}
+
+.stage-row[data-status="error"] .stage-icon {
+  background: var(--error);
+}
+
+.stage-row[data-status="error"] .stage-label {
+  color: var(--error);
+}
+
+.overall-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: 1;
+  min-width: 180px;
+}
+
+.progress-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+#progress-label {
+  font-size: 0.82rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .copy-feedback {
   min-height: 1.2em;
   color: var(--done);

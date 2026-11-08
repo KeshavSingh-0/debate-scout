@@ -72,6 +72,22 @@
         <a id="download-csv-link" href="#" download>Download CSV</a>
       </div>
     </div>
+
+    <div class="run-status" id="run-status" hidden>
+      <div class="stage-row" data-stage="jev_check">
+        <span class="stage-icon"></span>
+        <span class="stage-label">Jev API key</span>
+      </div>
+      <div class="stage-row" data-stage="opencaselist_login">
+        <span class="stage-icon"></span>
+        <span class="stage-label">opencaselist login</span>
+      </div>
+      <div class="overall-progress">
+        <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+        <span id="progress-label"></span>
+      </div>
+    </div>
+
     <p class="copy-feedback" id="copy-feedback"></p>
     <table id="results-table">
       <thead>

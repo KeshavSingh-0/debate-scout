@@ -41,3 +41,13 @@ class ProgressEvent(BaseModel):
     team_id: int
     status: str
     detail: str | None = None
+
+
+class StageEvent(BaseModel):
+    """One-time, run-level checkpoints (not per-team): verifying the Jev API
+    key and logging into opencaselist, both before any team is scraped."""
+
+    tournament_id: int
+    stage: str  # "jev_check" | "opencaselist_login" | "scraping"
+    status: str  # "running" | "success" | "error"
+    detail: str | None = None

@@ -18,14 +18,15 @@ from . import crud
 from .config import settings
 from .db import get_session
 from .docx_parser import extract_condensed_text as extract_docx_text
-from .jev_client import classify_aff
+from .jev_client import classify_aff, verify_api_key
 from .models import AffRecord, JobStatus, Team
 from .pairing_parser import PairingEntry
 from .pdf_card_parser import extract_condensed_text as extract_pdf_text
 from .scraper import OpenCaselistSession, ScrapeError
-from .schemas import ProgressEvent
+from .schemas import ProgressEvent, StageEvent
 
 ProgressCallback = Callable[[ProgressEvent], Awaitable[None]]
+StageCallback = Callable[[StageEvent], Awaitable[None]]
 
 
 async def run_tournament_pipeline(
@@ -36,7 +37,23 @@ async def run_tournament_pipeline(
     opencaselist_password: str,
     jev_api_key: str,
     on_progress: ProgressCallback,
+    on_stage: StageCallback,
 ) -> None:
+    async def stage(name: str, status: str, detail: str | None = None) -> None:
+        await on_stage(StageEvent(tournament_id=tournament_id, stage=name, status=status, detail=detail))
+
+    # Checked up front, before scraping anything: a bad Jev key or a bad
+    # opencaselist login would otherwise only surface after wasting time (and,
+    # for a bad Jev key, nothing is spent yet either -- this check sends no
+    # state or questions, so it costs no Jev tokens).
+    await stage("jev_check", "running")
+    try:
+        await asyncio.to_thread(verify_api_key, jev_api_key)
+    except Exception as exc:
+        await stage("jev_check", "error", str(exc))
+        return
+    await stage("jev_check", "success")
+
     team_jobs: list[tuple[Team, AffRecord]] = []
 
     db = get_session()
@@ -72,20 +89,29 @@ async def run_tournament_pipeline(
         db.close()
 
     if not team_jobs:
+        await stage("scraping", "success", "No new teams to scout -- everything was already scouted")
         return
 
     download_root = settings.upload_path / f"tournament_{tournament_id}_scrapes"
     semaphore = asyncio.Semaphore(settings.scrape_concurrency)
 
-    async with OpenCaselistSession(opencaselist_username, opencaselist_password, download_root) as session:
+    await stage("opencaselist_login", "running")
+    try:
+        async with OpenCaselistSession(opencaselist_username, opencaselist_password, download_root) as session:
+            await stage("opencaselist_login", "success")
+            await stage("scraping", "running", f"0/{len(team_jobs)} scouted")
 
-        async def process(team: Team, record: AffRecord) -> None:
-            async with semaphore:
-                await _process_team(
-                    tournament_id, team, record, session, caselist_slug, jev_api_key, on_progress
-                )
+            async def process(team: Team, record: AffRecord) -> None:
+                async with semaphore:
+                    await _process_team(
+                        tournament_id, team, record, session, caselist_slug, jev_api_key, on_progress
+                    )
 
-        await asyncio.gather(*(process(team, record) for team, record in team_jobs))
+            await asyncio.gather(*(process(team, record) for team, record in team_jobs))
+            await stage("scraping", "success")
+    except ScrapeError as exc:
+        await stage("opencaselist_login", "error", str(exc))
+        return
 
 
 async def _process_team(

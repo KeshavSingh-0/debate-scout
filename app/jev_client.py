@@ -67,6 +67,15 @@ def _build_client(api_key: str):
     return TypeSafeClient(model="jev-latest", api_key=api_key)
 
 
+def verify_api_key(api_key: str) -> None:
+    """Confirms the Jev API key works before committing to a whole
+    tournament run. This calls the models-list endpoint, not system_one --
+    no state or questions are sent, so it costs no Jev input tokens.
+    Raises on failure (e.g. typesafe_sdk.TypeSafeAuthenticationError)."""
+    client = _build_client(api_key)
+    client.models.list()
+
+
 def classify_aff(condensed_text: str, api_key: str) -> ClassificationResult:
     from typesafe_sdk import Choice, Noul
 
