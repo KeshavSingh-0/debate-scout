@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Debate Scout</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <h1>Debate Scout</h1>
+  <p class="subtitle">Upload a pairings PDF &rarr; auto-scout every opponent's aff on opencaselist.</p>
+</header>
+
+<main>
+  <section class="card" id="upload-card">
+    <h2>New tournament</h2>
+    <form id="upload-form">
+      <div class="field">
+        <label for="tournament_name">Tournament name</label>
+        <input id="tournament_name" name="tournament_name" type="text" placeholder="e.g. Greenhill 2026" required />
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="section">Section</label>
+          <select id="section" name="section" required>
+            <option value="NDT-CEDA">NDT-CEDA</option>
+            <option value="NSDA-HS Policy">NSDA-HS Policy</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="caselist_slug">Caselist URL slug</label>
+          <input id="caselist_slug" name="caselist_slug" type="text" placeholder="e.g. hspolicy25" required />
+          <small>The part after <code>/caselist/</code> when you're logged into opencaselist.com</small>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="opencaselist_username">Opencaselist username</label>
+          <input id="opencaselist_username" name="opencaselist_username" type="text" required autocomplete="username" />
+        </div>
+        <div class="field">
+          <label for="opencaselist_password">Opencaselist password</label>
+          <input id="opencaselist_password" name="opencaselist_password" type="password" required autocomplete="current-password" />
+        </div>
+      </div>
+      <small class="hint">Used once to log in for this run only &mdash; never stored.</small>
+
+      <div class="field">
+        <label for="jev_api_key">Jev (TypeSafe.ai) API key</label>
+        <input id="jev_api_key" name="jev_api_key" type="password" placeholder="ts_..." required />
+      </div>
+
+      <div class="field">
+        <label for="pairings_pdf">Pairings / entry list PDF</label>
+        <input id="pairings_pdf" name="pairings_pdf" type="file" accept="application/pdf" required />
+      </div>
+
+      <button type="submit" id="submit-btn">Start scouting</button>
+      <p class="form-error" id="form-error"></p>
+    </form>
+  </section>
+
+  <section class="card" id="results-card" hidden>
+    <div class="tabs" id="tournament-tabs"></div>
+    <div class="results-header">
+      <h2 id="results-title"></h2>
+      <div class="export-actions">
+        <button id="copy-tsv-btn">Copy for Sheets / Excel</button>
+        <a id="download-csv-link" href="#" download>Download CSV</a>
+      </div>
+    </div>
+    <p class="copy-feedback" id="copy-feedback"></p>
+    <table id="results-table">
+      <thead>
+        <tr>
+          <th>School</th>
+          <th>Team</th>
+          <th>Opponent</th>
+          <th>Round</th>
+          <th>Status</th>
+          <th>Aff type</th>
+          <th>Country</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
