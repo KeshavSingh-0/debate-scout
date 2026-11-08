@@ -1,0 +1,19 @@
+databases:
+  - name: debate-scout-db
+    plan: free
+
+services:
+  - type: web
+    name: debate-scout
+    runtime: docker
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: debate-scout-db
+          property: connectionString
+      - key: UPLOAD_DIR
+        value: /srv/data/uploads
+      - key: SCRAPE_CONCURRENCY
+        value: "3"

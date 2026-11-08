@@ -1,0 +1,14 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlalchemy==2.0.36
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-multipart==0.0.20
+pdfplumber==0.11.4
+python-docx==1.1.2
+playwright==1.49.1
+typesafe-sdk>=0.1.0
+aiofiles==24.1.0
+python-dotenv==1.0.1
+psycopg2-binary==2.9.10
+

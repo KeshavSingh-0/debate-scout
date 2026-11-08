@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+import asyncio
+import shutil
+import uuid
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+
+from . import crud, export
+from .config import settings
+from .db import get_session, init_db
+from .pairing_parser import parse_pairings_pdf
+from .pipeline import run_tournament_pipeline
+from .schemas import ProgressEvent, TeamStatus, TournamentSummary
+
+app = FastAPI(title="Debate Scout")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+class ConnectionManager:
+    def __init__(self) -> None:
+        self.active: dict[int, list[WebSocket]] = {}
+
+    async def connect(self, tournament_id: int, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.active.setdefault(tournament_id, []).append(websocket)
+
+    def disconnect(self, tournament_id: int, websocket: WebSocket) -> None:
+        connections = self.active.get(tournament_id, [])
+        if websocket in connections:
+            connections.remove(websocket)
+
+    async def broadcast(self, tournament_id: int, event: ProgressEvent) -> None:
+        for websocket in list(self.active.get(tournament_id, [])):
+            try:
+                await websocket.send_json(event.model_dump())
+            except Exception:
+                self.disconnect(tournament_id, websocket)
+
+
+manager = ConnectionManager()
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    init_db()
+
+
+@app.get("/", response_class=HTMLResponse)
+def index() -> FileResponse:
+    return FileResponse("static/index.html")
+
+
+def _tournament_summary(tournament_id: int) -> TournamentSummary:
+    db = get_session()
+    try:
+        tournament = crud.tournament_by_id(db, tournament_id)
+        if tournament is None:
+            raise HTTPException(status_code=404, detail="Tournament not found")
+        teams = []
+        for team in tournament.teams:
+            record = crud.latest_aff_record(db, team)
+            teams.append(
+                TeamStatus(
+                    team_id=team.id,
+                    school_name=team.school_name,
+                    team_code=team.team_code,
+                    opponent_school=team.opponent_school,
+                    opponent_team_code=team.opponent_team_code,
+                    round_label=team.round_label,
+                    status=record.status if record else "not_started",
+                    error_message=record.error_message if record else None,
+                    aff_type=record.aff_type if record else None,
+                    aff_type_confidence=record.aff_type_confidence if record else None,
+                    country=record.country if record else None,
+                    country_confidence=record.country_confidence if record else None,
+                    source_title=record.source_title if record else None,
+                    source_url=record.source_url if record else None,
+                )
+            )
+        return TournamentSummary(
+            id=tournament.id,
+            name=tournament.name,
+            section=tournament.section,
+            caselist_slug=tournament.caselist_slug,
+            teams=teams,
+        )
+    finally:
+        db.close()
+
+
+@app.get("/api/tournaments")
+def list_tournaments() -> list[TournamentSummary]:
+    db = get_session()
+    try:
+        tournaments = crud.all_tournaments(db)
+        ids = [t.id for t in tournaments]
+    finally:
+        db.close()
+    return [_tournament_summary(tid) for tid in ids]
+
+
+@app.get("/api/tournaments/{tournament_id}")
+def get_tournament(tournament_id: int) -> TournamentSummary:
+    return _tournament_summary(tournament_id)
+
+
+@app.get("/api/tournaments/{tournament_id}/export.csv")
+def export_csv(tournament_id: int):
+    db = get_session()
+    try:
+        tournament = crud.tournament_by_id(db, tournament_id)
+        if tournament is None:
+            raise HTTPException(status_code=404, detail="Tournament not found")
+        content = export.tournament_to_delimited(tournament, delimiter=",")
+    finally:
+        db.close()
+    filename = f"{tournament.name.replace(' ', '_')}_scouting.csv"
+    return PlainTextResponse(
+        content, media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@app.get("/api/tournaments/{tournament_id}/export.tsv")
+def export_tsv(tournament_id: int) -> PlainTextResponse:
+    db = get_session()
+    try:
+        tournament = crud.tournament_by_id(db, tournament_id)
+        if tournament is None:
+            raise HTTPException(status_code=404, detail="Tournament not found")
+        content = export.tournament_to_delimited(tournament, delimiter="\t")
+    finally:
+        db.close()
+    return PlainTextResponse(content, media_type="text/plain")
+
+
+@app.post("/api/tournaments/upload")
+async def upload_tournament(
+    tournament_name: str = Form(...),
+    section: str = Form(...),
+    caselist_slug: str = Form(...),
+    opencaselist_username: str = Form(...),
+    opencaselist_password: str = Form(...),
+    jev_api_key: str = Form(...),
+    pairings_pdf: UploadFile = File(...),
+) -> dict:
+    upload_path = settings.upload_path / f"{uuid.uuid4().hex}_{pairings_pdf.filename}"
+    with upload_path.open("wb") as out_file:
+        shutil.copyfileobj(pairings_pdf.file, out_file)
+
+    entries = parse_pairings_pdf(str(upload_path))
+    if not entries:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not find any school/team entries in that PDF. Double-check it's a pairings "
+            "or entry list document.",
+        )
+
+    db = get_session()
+    try:
+        tournament = crud.get_or_create_tournament(db, tournament_name, section, caselist_slug)
+        tournament_id = tournament.id
+    finally:
+        db.close()
+
+    async def on_progress(event: ProgressEvent) -> None:
+        await manager.broadcast(tournament_id, event)
+
+    async def run() -> None:
+        try:
+            await run_tournament_pipeline(
+                tournament_id=tournament_id,
+                entries=entries,
+                caselist_slug=caselist_slug,
+                opencaselist_username=opencaselist_username,
+                opencaselist_password=opencaselist_password,
+                jev_api_key=jev_api_key,
+                on_progress=on_progress,
+            )
+        finally:
+            upload_path.unlink(missing_ok=True)
+
+    task = asyncio.create_task(run())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    return {"tournament_id": tournament_id, "entries_found": len(entries)}
+
+
+@app.websocket("/ws/{tournament_id}")
+async def websocket_endpoint(websocket: WebSocket, tournament_id: int) -> None:
+    await manager.connect(tournament_id, websocket)
+    try:
+        snapshot = _tournament_summary(tournament_id)
+        await websocket.send_json({"type": "snapshot", "data": snapshot.model_dump()})
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(tournament_id, websocket)
