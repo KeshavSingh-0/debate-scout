@@ -68,16 +68,18 @@ file) are persisted, in the Postgres database Render provisions.
 
 ## Known limitations / first-run caveats
 
-- **The opencaselist scraper is grounded in real saved pages, except the
-  login form.** The example files this was built against (`example/`)
-  include real saved opencaselist pages, so the caselist listing, school
-  page, and team page navigation in `app/scraper.py` are written against
-  actual markup, not guesses -- including the fact that opencaselist's own
-  team codes (e.g. "CoVi") don't match a tournament's entry codes for the
-  same team (e.g. "CV"), which is why teams are matched by debater last
-  names instead. The one piece with no example to check against is the
-  login form itself; if a run fails there, the error names the step and a
-  debug screenshot is saved alongside the download folder.
+- **The opencaselist scraper is grounded in real saved pages.** The example
+  files this was built against (`example/`) include real saved opencaselist
+  pages -- the logged-out homepage/login form, the caselist listing, a
+  school page, and a team page -- so `app/scraper.py` is written against
+  actual markup, not guesses. That's also how two non-obvious things were
+  caught: opencaselist's own team codes (e.g. "CoVi") don't match a
+  tournament's entry codes for the same team (e.g. "CV"), which is why
+  teams are matched by debater last names instead; and login happens at
+  opencaselist's root URL itself (there's no separate `/login` route) with
+  a Tabroom.com username/password. If a run still fails somewhere, the
+  error names the step and a debug screenshot is saved alongside the
+  download folder.
 - **Teams need debater names to match reliably.** If a pairings PDF isn't a
   Tabroom-style entry-list table (see `app/pairing_parser.py`), debater
   names aren't available and the scraper falls back to matching by
