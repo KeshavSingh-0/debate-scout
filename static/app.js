@@ -11,12 +11,43 @@ const copyFeedback = document.getElementById("copy-feedback");
 const runStatus = document.getElementById("run-status");
 const progressFill = document.getElementById("progress-fill");
 const progressLabel = document.getElementById("progress-label");
+const debugModeToggle = document.getElementById("debug-mode-toggle");
+const debugConsole = document.getElementById("debug-console");
+const copyDebugBtn = document.getElementById("copy-debug-btn");
 
 let tournaments = new Map(); // id -> summary
 let activeTournamentId = null;
 let activeSocket = null;
 
 const TERMINAL_STATUSES = new Set(["done", "error", "skipped_cached"]);
+
+async function loadDebugLogs(tournamentId) {
+  const res = await fetch(`/api/tournaments/${tournamentId}/logs`);
+  debugConsole.textContent = await res.text();
+  debugConsole.scrollTop = debugConsole.scrollHeight;
+}
+
+function appendDebugLines(lines) {
+  debugConsole.textContent += (debugConsole.textContent ? "\n" : "") + lines.join("\n");
+  debugConsole.scrollTop = debugConsole.scrollHeight;
+}
+
+debugModeToggle.addEventListener("change", async () => {
+  const on = debugModeToggle.checked;
+  debugConsole.hidden = !on;
+  copyDebugBtn.hidden = !on;
+  if (on && activeTournamentId) await loadDebugLogs(activeTournamentId);
+});
+
+copyDebugBtn.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(debugConsole.textContent);
+    copyFeedback.textContent = "Debug logs copied — paste them to Claude.";
+  } catch {
+    copyFeedback.textContent = "Couldn't access the clipboard — select the text above and copy manually.";
+  }
+  setTimeout(() => (copyFeedback.textContent = ""), 4000);
+});
 
 function statusLabel(status) {
   return status.replace(/_/g, " ");
@@ -146,6 +177,8 @@ function connectSocket(tournamentId) {
       setStage(payload.stage, payload.status, payload.detail);
     } else if (payload.type === "team" && payload.tournament_id === activeTournamentId) {
       updateRowStatus(payload);
+    } else if (payload.type === "log" && payload.tournament_id === activeTournamentId) {
+      if (debugModeToggle.checked) appendDebugLines(payload.lines);
     }
   };
   activeSocket = socket;
@@ -155,6 +188,8 @@ function selectTournament(id) {
   activeTournamentId = id;
   resultsCard.hidden = false;
   resetRunStatus();
+  debugConsole.textContent = "";
+  if (debugModeToggle.checked) loadDebugLogs(id);
   renderTabs();
   connectSocket(id);
 }

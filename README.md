@@ -37,6 +37,21 @@ Re-uploading a pairings PDF for a tournament you already ran (e.g. with a
 few new entries added after a round of eliminations) only scouts the *new*
 teams -- anything already scouted is skipped.
 
+## When something fails: Debug Mode
+
+Check **Debug Mode** above the results table (it's safe to leave on) and a
+log console appears showing exactly what the scraper and Jev are doing --
+every navigation, click, and request, step by step. If a team errors out or
+a run won't connect, click **Copy debug logs** and paste that straight into
+a message to Claude; it has enough detail (the exact page it was on, which
+click failed, what Jev said) to diagnose the actual failure rather than
+guessing from the one-line error shown in the results table.
+
+This is separate from Render's own Logs tab: Debug Mode always captures
+full detail for the app's own buffer regardless of the `LOG_LEVEL`
+environment variable (which only controls what shows up in Render's
+stdout logs).
+
 ## Deploying it (one time, by whoever's setting this up)
 
 This needs a real backend (file parsing, a database, and browser automation

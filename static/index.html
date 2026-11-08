@@ -86,7 +86,14 @@
         <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
         <span id="progress-label"></span>
       </div>
+      <label class="debug-toggle">
+        <input type="checkbox" id="debug-mode-toggle" />
+        Debug Mode
+      </label>
+      <button id="copy-debug-btn" hidden>Copy debug logs</button>
     </div>
+
+    <pre class="debug-console" id="debug-console" hidden></pre>
 
     <p class="copy-feedback" id="copy-feedback"></p>
     <table id="results-table">
