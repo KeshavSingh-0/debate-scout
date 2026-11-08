@@ -1,4 +1,8 @@
-FROM python:3.11-slim
+# Pinned to bookworm (not the unqualified "slim" tag, which now resolves to
+# Debian trixie): Playwright 1.49.1's `--with-deps` installer references
+# apt packages (ttf-ubuntu-font-family, ttf-unifont) that trixie renamed/
+# dropped, so `playwright install --with-deps chromium` fails there.
+FROM python:3.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
