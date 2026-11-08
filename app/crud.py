@@ -19,11 +19,13 @@ def get_or_create_team(
     tournament: Tournament,
     school_name: str,
     team_code: str,
+    debaters: list[str],
     opponent_school: str | None,
     opponent_team_code: str | None,
     round_label: str | None,
 ) -> tuple[Team, bool]:
     """Returns (team, created). Updates matchup context if the team already existed."""
+    debaters_str = " & ".join(debaters)
     team = db.scalar(
         select(Team).where(
             Team.tournament_id == tournament.id,
@@ -32,6 +34,7 @@ def get_or_create_team(
         )
     )
     if team is not None:
+        team.debaters = debaters_str
         team.opponent_school = opponent_school
         team.opponent_team_code = opponent_team_code
         team.round_label = round_label
@@ -42,6 +45,7 @@ def get_or_create_team(
         tournament_id=tournament.id,
         school_name=school_name,
         team_code=team_code,
+        debaters=debaters_str,
         opponent_school=opponent_school,
         opponent_team_code=opponent_team_code,
         round_label=round_label,

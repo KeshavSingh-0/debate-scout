@@ -69,6 +69,7 @@ def _tournament_summary(tournament_id: int) -> TournamentSummary:
                     team_id=team.id,
                     school_name=team.school_name,
                     team_code=team.team_code,
+                    debaters=team.debaters,
                     opponent_school=team.opponent_school,
                     opponent_team_code=team.opponent_team_code,
                     round_label=team.round_label,

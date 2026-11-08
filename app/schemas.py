@@ -14,6 +14,7 @@ class TeamStatus(BaseModel):
     team_id: int
     school_name: str
     team_code: str
+    debaters: str
     opponent_school: str | None
     opponent_team_code: str | None
     round_label: str | None

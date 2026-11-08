@@ -58,6 +58,7 @@ function renderTable(summary) {
     row.innerHTML = `
       <td>${team.school_name}</td>
       <td>${team.team_code}</td>
+      <td>${team.debaters || "—"}</td>
       <td>${opponent}</td>
       <td>${team.round_label || "—"}</td>
       <td><span class="badge status-${team.status}"${statusTitle}>${statusLabel(team.status)}</span></td>
