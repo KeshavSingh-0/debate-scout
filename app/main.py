@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import uuid
 
@@ -11,9 +12,14 @@ from fastapi.staticfiles import StaticFiles
 from . import crud, export
 from .config import settings
 from .db import get_session, init_db
+from .debug_log import get_all_text, get_new_lines
+from .logging_config import setup_logging
 from .pairing_parser import parse_pairings_pdf
 from .pipeline import run_tournament_pipeline
 from .schemas import ProgressEvent, StageEvent, TeamStatus, TournamentSummary
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Debate Scout")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -48,6 +54,7 @@ manager = ConnectionManager()
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    logger.info("Debate Scout started (log level=%s)", settings.log_level)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -139,6 +146,14 @@ def export_tsv(tournament_id: int) -> PlainTextResponse:
     return PlainTextResponse(content, media_type="text/plain")
 
 
+@app.get("/api/tournaments/{tournament_id}/logs")
+def get_debug_logs(tournament_id: int) -> PlainTextResponse:
+    """Full debug-level log for this tournament's most recent run(s) --
+    what the UI's "Copy debug logs" button fetches. Always full detail,
+    independent of the server's own LOG_LEVEL (see debug_log.py)."""
+    return PlainTextResponse(get_all_text(tournament_id) or "No logs yet for this tournament.")
+
+
 @app.post("/api/tournaments/upload")
 async def upload_tournament(
     tournament_name: str = Form(...),
@@ -153,8 +168,12 @@ async def upload_tournament(
     with upload_path.open("wb") as out_file:
         shutil.copyfileobj(pairings_pdf.file, out_file)
 
+    logger.info("Uploaded pairings PDF %r (%s)", pairings_pdf.filename, upload_path)
+
     entries = parse_pairings_pdf(str(upload_path))
+    logger.info("Parsed %d school/team entries from %r", len(entries), pairings_pdf.filename)
     if not entries:
+        logger.warning("No entries found in %r -- rejecting upload", pairings_pdf.filename)
         raise HTTPException(
             status_code=422,
             detail="Could not find any school/team entries in that PDF. Double-check it's a pairings "
@@ -168,11 +187,32 @@ async def upload_tournament(
     finally:
         db.close()
 
+    logger.info(
+        "Starting run for tournament_id=%s name=%r section=%r caselist_slug=%r entries=%d",
+        tournament_id,
+        tournament_name,
+        section,
+        caselist_slug,
+        len(entries),
+    )
+
+    log_cursor = 0
+
+    async def flush_logs() -> None:
+        nonlocal log_cursor
+        lines, log_cursor = get_new_lines(tournament_id, since=log_cursor)
+        if lines:
+            await manager.broadcast(tournament_id, {"type": "log", "tournament_id": tournament_id, "lines": lines})
+
     async def on_progress(event: ProgressEvent) -> None:
+        logger.debug("team_id=%s status=%s detail=%s", event.team_id, event.status, event.detail)
         await manager.broadcast(tournament_id, {"type": "team", **event.model_dump()})
+        await flush_logs()
 
     async def on_stage(event: StageEvent) -> None:
+        logger.info("tournament_id=%s stage=%s status=%s detail=%s", tournament_id, event.stage, event.status, event.detail)
         await manager.broadcast(tournament_id, {"type": "stage", **event.model_dump()})
+        await flush_logs()
 
     async def run() -> None:
         try:
@@ -186,7 +226,24 @@ async def upload_tournament(
                 on_progress=on_progress,
                 on_stage=on_stage,
             )
+            logger.info("Run finished for tournament_id=%s", tournament_id)
+        except Exception:
+            # Safety net: anything that escapes run_tournament_pipeline's own
+            # error handling would otherwise just vanish into asyncio's
+            # default (log-only) exception handler. Log the full traceback
+            # and surface it in the UI instead of leaving the run looking
+            # like it's silently stuck.
+            logger.exception("Unhandled error running tournament_id=%s", tournament_id)
+            await on_stage(
+                StageEvent(
+                    tournament_id=tournament_id,
+                    stage="scraping",
+                    status="error",
+                    detail="Unexpected server error -- check the server logs for a traceback.",
+                )
+            )
         finally:
+            await flush_logs()
             upload_path.unlink(missing_ok=True)
 
     task = asyncio.create_task(run())
@@ -199,6 +256,7 @@ async def upload_tournament(
 @app.websocket("/ws/{tournament_id}")
 async def websocket_endpoint(websocket: WebSocket, tournament_id: int) -> None:
     await manager.connect(tournament_id, websocket)
+    logger.debug("WebSocket connected for tournament_id=%s", tournament_id)
     try:
         snapshot = _tournament_summary(tournament_id)
         await websocket.send_json({"type": "snapshot", "data": snapshot.model_dump()})
@@ -206,3 +264,4 @@ async def websocket_endpoint(websocket: WebSocket, tournament_id: int) -> None:
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(tournament_id, websocket)
+        logger.debug("WebSocket disconnected for tournament_id=%s", tournament_id)

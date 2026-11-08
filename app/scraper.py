@@ -36,12 +36,15 @@ same authenticated browser context, instead of logging in again per team.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://opencaselist.com"
 NAV_TIMEOUT_MS = 20_000
@@ -66,10 +69,22 @@ async def _screenshot(page: Page, download_dir: Path, tag: str) -> str:
         await page.screenshot(path=str(path), full_page=True)
         return str(path)
     except Exception:
+        logger.debug("Could not save a debug screenshot to %s", path, exc_info=True)
         return ""
 
 
+async def _fail(message: str, page: Page, download_dir: Path, tag: str, cause: Exception | None = None) -> None:
+    """Logs the failure (with the page's current URL for context) and
+    raises ScrapeError with a debug screenshot path attached."""
+    screenshot = await _screenshot(page, download_dir, tag)
+    logger.error("%s (page: %s, screenshot: %s)", message, page.url, screenshot or "not saved")
+    if cause is not None:
+        raise ScrapeError(message, screenshot) from cause
+    raise ScrapeError(message, screenshot)
+
+
 async def _click_matching_link(page: Page, text: str, download_dir: Path, what: str) -> None:
+    logger.debug("Looking for a %s link matching %r on %s", what, text, page.url)
     candidate = page.get_by_role("link", name=re.compile(re.escape(text), re.IGNORECASE)).first
     try:
         await candidate.click(timeout=NAV_TIMEOUT_MS)
@@ -78,11 +93,15 @@ async def _click_matching_link(page: Page, text: str, download_dir: Path, what: 
             fallback = page.get_by_text(re.compile(re.escape(text), re.IGNORECASE)).first
             await fallback.click(timeout=NAV_TIMEOUT_MS)
         except Exception as exc:
-            raise ScrapeError(
+            await _fail(
                 f"Could not find a link/row for {what} ('{text}') on {page.url}.",
-                await _screenshot(page, download_dir, f"missing_{what}"),
-            ) from exc
+                page,
+                download_dir,
+                f"missing_{what}",
+                exc,
+            )
     await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+    logger.debug("Clicked %s link matching %r, now on %s", what, text, page.url)
 
 
 class OpenCaselistSession:
@@ -126,23 +145,32 @@ class OpenCaselistSession:
         assert self._context is not None
         page = await self._context.new_page()
         try:
+            logger.info("Navigating to opencaselist homepage")
             await page.goto(f"{BASE_URL}/", timeout=NAV_TIMEOUT_MS)
 
             try:
                 await page.locator("#username").fill(self._username, timeout=NAV_TIMEOUT_MS)
+                logger.debug("Filled #username field")
             except Exception as exc:
-                raise ScrapeError(
+                await _fail(
                     "Could not find the username field on the opencaselist homepage.",
-                    await _screenshot(page, self._download_dir, "login_username"),
-                ) from exc
+                    page,
+                    self._download_dir,
+                    "login_username",
+                    exc,
+                )
 
             try:
                 await page.locator("#password").fill(self._password, timeout=NAV_TIMEOUT_MS)
+                logger.debug("Filled #password field")
             except Exception as exc:
-                raise ScrapeError(
+                await _fail(
                     "Could not find the password field on the opencaselist homepage.",
-                    await _screenshot(page, self._download_dir, "login_password"),
-                ) from exc
+                    page,
+                    self._download_dir,
+                    "login_password",
+                    exc,
+                )
 
             try:
                 # The submit button starts disabled until both fields have a
@@ -150,25 +178,30 @@ class OpenCaselistSession:
                 # actionable (enabled) rather than failing immediately.
                 submit = page.get_by_role("button", name="Login", exact=True).first
                 await submit.click(timeout=NAV_TIMEOUT_MS)
+                logger.debug("Clicked Login button")
             except Exception as exc:
-                raise ScrapeError(
+                await _fail(
                     "Could not find/click the Login button on opencaselist.",
-                    await _screenshot(page, self._download_dir, "login_submit"),
-                ) from exc
+                    page,
+                    self._download_dir,
+                    "login_submit",
+                    exc,
+                )
 
             await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
             try:
                 await page.get_by_role("link", name="Logout", exact=True).wait_for(timeout=NAV_TIMEOUT_MS)
+                logger.info("Login confirmed (Logout link present)")
             except Exception as exc:
                 toast_text = ""
                 try:
                     toast_text = (await page.locator(".Toastify").inner_text(timeout=1000)).strip()
                 except Exception:
-                    pass
+                    logger.debug("No Toastify error text found after failed login")
                 detail = "Login did not succeed -- check the opencaselist/Tabroom username and password."
                 if toast_text:
                     detail += f" Site said: {toast_text}"
-                raise ScrapeError(detail, await _screenshot(page, self._download_dir, "login_failed")) from exc
+                await _fail(detail, page, self._download_dir, "login_failed", exc)
         finally:
             await page.close()
 
@@ -196,21 +229,27 @@ class OpenCaselistSession:
         self, *, caselist_slug: str, school_name: str, team_code: str, debaters: list[str]
     ) -> ScrapedFile:
         assert self._context is not None
+        label = f"{school_name} {team_code}"
         page = await self._context.new_page()
         try:
+            logger.debug("[%s] Navigating to caselist %s", label, caselist_slug)
             await page.goto(f"{BASE_URL}/{caselist_slug}", timeout=NAV_TIMEOUT_MS)
             await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
             await _click_matching_link(page, school_name, self._download_dir, "school")
 
+            who = " & ".join(debaters) if debaters else team_code
+            logger.debug("[%s] Looking for a team link matching debaters: %s", label, who)
             team_link = await self._find_team_link(page, school_name, team_code, debaters)
             if team_link is None:
-                who = " & ".join(debaters) if debaters else team_code
-                raise ScrapeError(
+                await _fail(
                     f"Could not find a team matching {who} on {school_name}'s opencaselist page.",
-                    await _screenshot(page, self._download_dir, "missing_team"),
+                    page,
+                    self._download_dir,
+                    "missing_team",
                 )
             await team_link.click(timeout=NAV_TIMEOUT_MS)
             await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+            logger.debug("[%s] On team page: %s", label, page.url)
 
             # The team page has an "All / Aff / Neg" filter; following the "Aff"
             # filter link (rather than searching row text for "Aff") avoids
@@ -220,20 +259,28 @@ class OpenCaselistSession:
                 aff_filter = page.get_by_role("link", name="Aff", exact=True).first
                 await aff_filter.click(timeout=NAV_TIMEOUT_MS)
                 await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+                logger.debug("[%s] Filtered to Aff rounds: %s", label, page.url)
             except Exception as exc:
-                raise ScrapeError(
+                await _fail(
                     f"Could not find the 'Aff' filter on {school_name} {team_code}'s opencaselist page.",
-                    await _screenshot(page, self._download_dir, "missing_aff_filter"),
-                ) from exc
+                    page,
+                    self._download_dir,
+                    "missing_aff_filter",
+                    exc,
+                )
 
             # Scoped to tbody, not thead, so this is a data row -- the header
             # row also carries role="row".
             rows = page.locator("tbody[role='rowgroup'] tr[role='row']")
-            if await rows.count() == 0:
-                raise ScrapeError(
+            row_count = await rows.count()
+            logger.debug("[%s] Found %d Aff round row(s)", label, row_count)
+            if row_count == 0:
+                await _fail(
                     f"{school_name} {team_code} has no rounds marked 'Aff' on opencaselist -- "
                     "they may not have posted an affirmative yet.",
-                    await _screenshot(page, self._download_dir, "no_aff_rounds"),
+                    page,
+                    self._download_dir,
+                    "no_aff_rounds",
                 )
             row = rows.first
 
@@ -245,7 +292,7 @@ class OpenCaselistSession:
                 if preview_href:
                     source_url = preview_href
             except Exception:
-                pass
+                logger.debug("[%s] No Preview link found on the Aff row; using the team page as source_url", label)
 
             try:
                 title_cells = row.locator("td")
@@ -253,7 +300,9 @@ class OpenCaselistSession:
                 round_text = (await title_cells.nth(1).inner_text()).strip()
                 title = f"{tournament_text} {round_text}".strip() or f"{school_name} {team_code} aff"
             except Exception:
+                logger.debug("[%s] Could not read tournament/round cells for a title", label, exc_info=True)
                 title = f"{school_name} {team_code} aff"
+            logger.debug("[%s] Picked round %r, source_url=%s", label, title, source_url)
 
             try:
                 download_icon = row.get_by_test_id("download")
@@ -264,12 +313,17 @@ class OpenCaselistSession:
                 team_dir.mkdir(parents=True, exist_ok=True)
                 local_path = team_dir / download.suggested_filename
                 await download.save_as(str(local_path))
+                logger.debug("[%s] Downloaded %r to %s", label, download.suggested_filename, local_path)
                 return ScrapedFile(title=title, source_url=source_url, local_path=str(local_path))
             except Exception as exc:
-                raise ScrapeError(
+                await _fail(
                     f"Found an 'Aff' round for {school_name} {team_code} but couldn't download its "
                     "file -- the download icon's behavior may have changed and needs a scraper tweak.",
-                    await _screenshot(page, self._download_dir, "download_failed"),
-                ) from exc
+                    page,
+                    self._download_dir,
+                    "download_failed",
+                    exc,
+                )
+                raise  # unreachable; _fail always raises, this satisfies static analysis
         finally:
             await page.close()

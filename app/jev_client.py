@@ -29,7 +29,10 @@ Question design here follows TypeSafe's own integration guidance (the
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 COUNTRIES = [
     "Nigeria",
@@ -72,8 +75,14 @@ def verify_api_key(api_key: str) -> None:
     tournament run. This calls the models-list endpoint, not system_one --
     no state or questions are sent, so it costs no Jev input tokens.
     Raises on failure (e.g. typesafe_sdk.TypeSafeAuthenticationError)."""
+    logger.debug("Calling Jev models.list() to verify the API key (no tokens spent)")
     client = _build_client(api_key)
-    client.models.list()
+    try:
+        response = client.models.list()
+    except Exception as exc:
+        logger.warning("Jev API key check failed: %s: %s", type(exc).__name__, exc)
+        raise
+    logger.debug("Jev API key OK -- %d model(s) available", len(response.models))
 
 
 def classify_aff(condensed_text: str, api_key: str) -> ClassificationResult:
@@ -111,18 +120,28 @@ def classify_aff(condensed_text: str, api_key: str) -> ClassificationResult:
         criteria={country: country for country in COUNTRIES},
     )
 
-    response = client.system_one(
-        state=condensed_text,
-        questions={
-            "aff_type": aff_type_question,
-            "country_specific": country_specific_question,
-            "country": country_question,
-        },
+    logger.debug(
+        "Calling Jev system_one with %d chars of state, questions=[aff_type, country_specific, country]",
+        len(condensed_text),
     )
+    try:
+        response = client.system_one(
+            state=condensed_text,
+            questions={
+                "aff_type": aff_type_question,
+                "country_specific": country_specific_question,
+                "country": country_question,
+            },
+        )
+    except Exception as exc:
+        logger.warning("Jev system_one call failed: %s: %s", type(exc).__name__, exc)
+        raise
+    logger.debug("Jev responded (model=%s, usage=%s)", response.model, response.usage)
 
     aff_answer = response.choices["aff_type"]
     aff_type = aff_answer.choice
     aff_confidence = getattr(aff_answer, "confidence", None)
+    logger.debug("aff_type=%s confidence=%s", aff_type, aff_confidence)
 
     if aff_type != POLICY_AFF:
         return ClassificationResult(
@@ -132,7 +151,14 @@ def classify_aff(condensed_text: str, api_key: str) -> ClassificationResult:
             country_confidence=None,
         )
 
-    is_country_specific = response.nouls["country_specific"].noul >= COUNTRY_SPECIFIC_THRESHOLD
+    country_specific_noul = response.nouls["country_specific"].noul
+    is_country_specific = country_specific_noul >= COUNTRY_SPECIFIC_THRESHOLD
+    logger.debug(
+        "country_specific noul=%.3f (threshold=%.2f) -> %s",
+        country_specific_noul,
+        COUNTRY_SPECIFIC_THRESHOLD,
+        "specific" if is_country_specific else "all/non-specified",
+    )
     if not is_country_specific:
         return ClassificationResult(
             aff_type=aff_type,
@@ -142,6 +168,7 @@ def classify_aff(condensed_text: str, api_key: str) -> ClassificationResult:
         )
 
     country_answer = response.choices["country"]
+    logger.debug("country=%s confidence=%s", country_answer.choice, getattr(country_answer, "confidence", None))
     return ClassificationResult(
         aff_type=aff_type,
         aff_type_confidence=aff_confidence,
