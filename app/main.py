@@ -13,7 +13,7 @@ from .config import settings
 from .db import get_session, init_db
 from .pairing_parser import parse_pairings_pdf
 from .pipeline import run_tournament_pipeline
-from .schemas import ProgressEvent, TeamStatus, TournamentSummary
+from .schemas import ProgressEvent, StageEvent, TeamStatus, TournamentSummary
 
 app = FastAPI(title="Debate Scout")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -34,10 +34,10 @@ class ConnectionManager:
         if websocket in connections:
             connections.remove(websocket)
 
-    async def broadcast(self, tournament_id: int, event: ProgressEvent) -> None:
+    async def broadcast(self, tournament_id: int, payload: dict) -> None:
         for websocket in list(self.active.get(tournament_id, [])):
             try:
-                await websocket.send_json(event.model_dump())
+                await websocket.send_json(payload)
             except Exception:
                 self.disconnect(tournament_id, websocket)
 
@@ -169,7 +169,10 @@ async def upload_tournament(
         db.close()
 
     async def on_progress(event: ProgressEvent) -> None:
-        await manager.broadcast(tournament_id, event)
+        await manager.broadcast(tournament_id, {"type": "team", **event.model_dump()})
+
+    async def on_stage(event: StageEvent) -> None:
+        await manager.broadcast(tournament_id, {"type": "stage", **event.model_dump()})
 
     async def run() -> None:
         try:
@@ -181,6 +184,7 @@ async def upload_tournament(
                 opencaselist_password=opencaselist_password,
                 jev_api_key=jev_api_key,
                 on_progress=on_progress,
+                on_stage=on_stage,
             )
         finally:
             upload_path.unlink(missing_ok=True)

@@ -8,13 +8,49 @@ const resultsBody = document.getElementById("results-body");
 const copyTsvBtn = document.getElementById("copy-tsv-btn");
 const downloadCsvLink = document.getElementById("download-csv-link");
 const copyFeedback = document.getElementById("copy-feedback");
+const runStatus = document.getElementById("run-status");
+const progressFill = document.getElementById("progress-fill");
+const progressLabel = document.getElementById("progress-label");
 
 let tournaments = new Map(); // id -> summary
 let activeTournamentId = null;
 let activeSocket = null;
 
+const TERMINAL_STATUSES = new Set(["done", "error", "skipped_cached"]);
+
 function statusLabel(status) {
   return status.replace(/_/g, " ");
+}
+
+function resetRunStatus() {
+  runStatus.hidden = false;
+  for (const row of runStatus.querySelectorAll(".stage-row")) {
+    row.dataset.status = "";
+    row.removeAttribute("title");
+  }
+  progressFill.style.width = "0%";
+  progressLabel.textContent = "";
+}
+
+function setStage(stageName, status, detail) {
+  const row = runStatus.querySelector(`.stage-row[data-stage="${stageName}"]`);
+  if (!row) return;
+  row.dataset.status = status;
+  if (detail) row.title = detail;
+  else row.removeAttribute("title");
+}
+
+function recomputeProgress() {
+  const rows = resultsBody.querySelectorAll("tr");
+  const total = rows.length;
+  let finished = 0;
+  for (const row of rows) {
+    const badge = row.querySelector(".badge");
+    if (badge && TERMINAL_STATUSES.has(badge.dataset.status)) finished += 1;
+  }
+  const pct = total ? Math.round((finished / total) * 100) : 0;
+  progressFill.style.width = `${pct}%`;
+  progressLabel.textContent = total ? `${finished} / ${total} scouted` : "";
 }
 
 function renderTabs() {
@@ -61,7 +97,7 @@ function renderTable(summary) {
       <td>${team.debaters || "—"}</td>
       <td>${opponent}</td>
       <td>${team.round_label || "—"}</td>
-      <td><span class="badge status-${team.status}"${statusTitle}>${statusLabel(team.status)}</span></td>
+      <td><span class="badge status-${team.status}" data-status="${team.status}"${statusTitle}>${statusLabel(team.status)}</span></td>
       <td>${affCell}</td>
       <td>${countryCell}</td>
       <td>${sourceCell}</td>
@@ -69,6 +105,7 @@ function renderTable(summary) {
     row.dataset.teamId = team.team_id;
     resultsBody.appendChild(row);
   }
+  recomputeProgress();
 }
 
 function updateRowStatus(event) {
@@ -76,8 +113,10 @@ function updateRowStatus(event) {
   if (!row) return;
   const badge = row.querySelector(".badge");
   badge.className = `badge status-${event.status}`;
+  badge.dataset.status = event.status;
   badge.textContent = statusLabel(event.status);
   if (event.detail) badge.title = event.detail;
+  recomputeProgress();
 }
 
 function connectSocket(tournamentId) {
@@ -90,8 +129,22 @@ function connectSocket(tournamentId) {
     const payload = JSON.parse(msg.data);
     if (payload.type === "snapshot") {
       tournaments.set(payload.data.id, payload.data);
-      if (payload.data.id === activeTournamentId) renderTable(payload.data);
-    } else if (payload.tournament_id === activeTournamentId) {
+      if (payload.data.id === activeTournamentId) {
+        renderTable(payload.data);
+        // Reconnecting to a tournament with teams already past "queued"
+        // means a run already got through these checks -- reflect that
+        // instead of showing a fresh "pending" connectivity indicator for
+        // one that isn't actually running right now.
+        const startedStatuses = new Set(["scraping", "parsing", "classifying", "done", "error"]);
+        const started = payload.data.teams.some((t) => startedStatuses.has(t.status));
+        if (started) {
+          setStage("jev_check", "success");
+          setStage("opencaselist_login", "success");
+        }
+      }
+    } else if (payload.type === "stage" && payload.tournament_id === activeTournamentId) {
+      setStage(payload.stage, payload.status, payload.detail);
+    } else if (payload.type === "team" && payload.tournament_id === activeTournamentId) {
       updateRowStatus(payload);
     }
   };
@@ -101,6 +154,7 @@ function connectSocket(tournamentId) {
 function selectTournament(id) {
   activeTournamentId = id;
   resultsCard.hidden = false;
+  resetRunStatus();
   renderTabs();
   connectSocket(id);
 }

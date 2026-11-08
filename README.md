@@ -126,9 +126,17 @@ pytest
 
 This project doubles as a small case study in "type-safe" LLM calls. Jev
 isn't a text-generation model you parse JSON out of -- you hand it a
-`state` (here, the condensed case text) plus typed `Choice` questions, and
-it returns a typed answer plus a confidence score directly, no prompt
-engineering a JSON schema and hoping the model honors it. See
-`app/jev_client.py` for exactly how that's used here (one `Choice` question
-for K-aff vs. policy aff, and a second one for country, skipped entirely
-for K-affs to save tokens).
+`state` (here, the condensed case text) plus typed questions (`Choice`,
+`Noul`, ...), and it returns typed answers with calibrated probabilities
+directly, no prompt engineering a JSON schema and hoping the model honors
+it.
+
+`app/jev_client.py` follows TypeSafe's own integration guidance (installed
+here as the `typesafe-ai` Claude Code skill): all three questions --
+K-aff vs. policy aff, whether the plan is about one specific country, and
+which country -- share the same state, so they're asked in a *single*
+request instead of two or three. The country Choice and its "is this
+country-specific at all" Noul are asked speculatively in the same call;
+code only uses the Choice's answer when the Noul clears a threshold,
+instead of baking an "All/Non-Specified" catch-all into the Choice's own
+options, which tends to bias the other options' probabilities.
