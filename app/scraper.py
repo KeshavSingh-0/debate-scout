@@ -1,13 +1,27 @@
 """Playwright scraper for opencaselist.com.
 
-Important caveat: opencaselist is a login-gated, client-rendered (JS) site,
-and this project had no credentials available to test against the live
-DOM while building it. The selectors below are written defensively -- text
-and role based rather than brittle CSS classes -- but the first real run
-against each section should be treated as a smoke test. If a step fails,
-`ScrapeError` carries a screenshot path (saved next to the download dir) so
-the actual page can be inspected and the one failing locator fixed, without
-having to touch anything else in this module.
+Most of this is now ground-truthed against real saved pages from the site
+(caselist listing, school page, team page), not guessed:
+  - Caselist URLs have NO "/caselist/" prefix: https://opencaselist.com/{slug}
+    (e.g. /ndtceda26, /hspolicy26), and a school page is {slug}/{SchoolName}.
+  - A team's link text on its school page is
+    "{School} {opencaselist team code} ({Debater One} - {Debater Two})" --
+    opencaselist's own team code does NOT match a tournament's entry code
+    for the same team (see pairing_parser.py), so teams are matched by
+    debater last names instead, which appear in both systems.
+  - A team page is a table of rounds (Tournament, Round, Side, Opponent,
+    Judge, ...), not a single "Aff file" link. Each row has a Side cell
+    ("Aff"/"Neg"), a JS-driven download icon (svg[data-testid="download"])
+    that triggers a real browser download, and a separate, directly
+    navigable "Preview" link (<a href="https://opencaselist.com/preview?
+    path=...">, svg[data-testid="preview"]) that's kept as the result's
+    source_url so a person can open it to sanity-check the pick.
+
+The one part that's still unverified is the login form itself (no saved
+login page was available) -- `_login` below uses defensive, label/role
+based selectors as a best-effort first pass. If that's the step that fails,
+`ScrapeError` carries a screenshot path (saved next to the download dir)
+for a quick look at the real markup.
 
 Credentials are only ever held in memory for the lifetime of one tournament
 run (never written to the database or disk): `OpenCaselistSession` logs in
@@ -150,36 +164,103 @@ class OpenCaselistSession:
         finally:
             await page.close()
 
+    async def _find_team_link(self, page: Page, school_name: str, team_code: str, debaters: list[str]):
+        """Team link text looks like "Kentucky CoVi (Camden Coale -
+        Isabella Villarreal)". opencaselist's own team code in that text
+        doesn't match a tournament's entry code for the same team, so this
+        matches on debater last names when available, falling back to the
+        (less reliable) team_code substring otherwise."""
+        candidates = page.get_by_role("link")
+        count = await candidates.count()
+        for i in range(count):
+            candidate = candidates.nth(i)
+            text = (await candidate.inner_text()).strip()
+            if not text:
+                continue
+            if debaters:
+                if all(name.lower() in text.lower() for name in debaters):
+                    return candidate
+            elif team_code.lower() in text.lower():
+                return candidate
+        return None
+
     async def scrape_team_aff(
-        self, *, caselist_slug: str, school_name: str, team_code: str
+        self, *, caselist_slug: str, school_name: str, team_code: str, debaters: list[str]
     ) -> ScrapedFile:
         assert self._context is not None
         page = await self._context.new_page()
         try:
-            await page.goto(f"{BASE_URL}/caselist/{caselist_slug}", timeout=NAV_TIMEOUT_MS)
+            await page.goto(f"{BASE_URL}/{caselist_slug}", timeout=NAV_TIMEOUT_MS)
             await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
             await _click_matching_link(page, school_name, self._download_dir, "school")
-            await _click_matching_link(page, team_code, self._download_dir, "team")
 
-            aff_link = page.get_by_role(
-                "link", name=re.compile(r"\baff(irmative)?\b(?!.*neg)", re.IGNORECASE)
-            ).first
+            team_link = await self._find_team_link(page, school_name, team_code, debaters)
+            if team_link is None:
+                who = " & ".join(debaters) if debaters else team_code
+                raise ScrapeError(
+                    f"Could not find a team matching {who} on {school_name}'s opencaselist page.",
+                    await _screenshot(page, self._download_dir, "missing_team"),
+                )
+            await team_link.click(timeout=NAV_TIMEOUT_MS)
+            await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+
+            # The team page has an "All / Aff / Neg" filter; following the "Aff"
+            # filter link (rather than searching row text for "Aff") avoids
+            # colliding with that filter tab itself, which is also literally
+            # labeled "Aff" and would otherwise be the first match.
             try:
+                aff_filter = page.get_by_role("link", name="Aff", exact=True).first
+                await aff_filter.click(timeout=NAV_TIMEOUT_MS)
+                await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
+            except Exception as exc:
+                raise ScrapeError(
+                    f"Could not find the 'Aff' filter on {school_name} {team_code}'s opencaselist page.",
+                    await _screenshot(page, self._download_dir, "missing_aff_filter"),
+                ) from exc
+
+            # Scoped to tbody, not thead, so this is a data row -- the header
+            # row also carries role="row".
+            rows = page.locator("tbody[role='rowgroup'] tr[role='row']")
+            if await rows.count() == 0:
+                raise ScrapeError(
+                    f"{school_name} {team_code} has no rounds marked 'Aff' on opencaselist -- "
+                    "they may not have posted an affirmative yet.",
+                    await _screenshot(page, self._download_dir, "no_aff_rounds"),
+                )
+            row = rows.first
+
+            source_url = page.url
+            try:
+                preview_href = await row.get_by_test_id("preview").locator("xpath=ancestor::a[1]").get_attribute(
+                    "href", timeout=NAV_TIMEOUT_MS
+                )
+                if preview_href:
+                    source_url = preview_href
+            except Exception:
+                pass
+
+            try:
+                title_cells = row.locator("td")
+                tournament_text = (await title_cells.nth(0).inner_text()).strip()
+                round_text = (await title_cells.nth(1).inner_text()).strip()
+                title = f"{tournament_text} {round_text}".strip() or f"{school_name} {team_code} aff"
+            except Exception:
+                title = f"{school_name} {team_code} aff"
+
+            try:
+                download_icon = row.get_by_test_id("download")
                 async with page.expect_download(timeout=NAV_TIMEOUT_MS) as download_info:
-                    await aff_link.click(timeout=NAV_TIMEOUT_MS)
+                    await download_icon.click(timeout=NAV_TIMEOUT_MS)
                 download = await download_info.value
                 team_dir = self._download_dir / re.sub(r"[^\w.-]+", "_", f"{school_name}_{team_code}")
                 team_dir.mkdir(parents=True, exist_ok=True)
                 local_path = team_dir / download.suggested_filename
                 await download.save_as(str(local_path))
-                return ScrapedFile(
-                    title=download.suggested_filename, source_url=page.url, local_path=str(local_path)
-                )
+                return ScrapedFile(title=title, source_url=source_url, local_path=str(local_path))
             except Exception as exc:
                 raise ScrapeError(
-                    f"Found an 'Aff' link for {school_name} {team_code} but couldn't download it "
-                    "as a file -- it may open inline instead of downloading, which needs a small "
-                    "scraper tweak.",
+                    f"Found an 'Aff' round for {school_name} {team_code} but couldn't download its "
+                    "file -- the download icon's behavior may have changed and needs a scraper tweak.",
                     await _screenshot(page, self._download_dir, "download_failed"),
                 ) from exc
         finally:

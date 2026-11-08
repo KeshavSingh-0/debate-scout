@@ -51,6 +51,7 @@ async def run_tournament_pipeline(
                 tournament,
                 entry.school_name,
                 entry.team_code,
+                entry.debaters,
                 entry.opponent_school,
                 entry.opponent_team_code,
                 entry.round_label,
@@ -113,8 +114,12 @@ async def _process_team(
 
         await set_status(JobStatus.SCRAPING.value)
         try:
+            debaters = [name.strip() for name in team.debaters.split("&") if name.strip()]
             scraped = await session.scrape_team_aff(
-                caselist_slug=caselist_slug, school_name=team.school_name, team_code=team.team_code
+                caselist_slug=caselist_slug,
+                school_name=team.school_name,
+                team_code=team.team_code,
+                debaters=debaters,
             )
         except ScrapeError as exc:
             await set_status(JobStatus.ERROR.value, error_message=str(exc))

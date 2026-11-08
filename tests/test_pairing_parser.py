@@ -1,7 +1,12 @@
+from pathlib import Path
+
 from app import pairing_parser
+
+EXAMPLE_PDF = Path(__file__).resolve().parent.parent / "example" / "tabroom.pdf"
 
 
 def test_vs_pairing_splits_school_and_code(monkeypatch):
+    monkeypatch.setattr(pairing_parser, "_parse_entry_table", lambda path: None)
     lines = ["Round 3", "Georgetown KM vs Michigan State FM (Aff)"]
     monkeypatch.setattr(pairing_parser, "_extract_lines", lambda path: lines)
 
@@ -18,6 +23,7 @@ def test_vs_pairing_splits_school_and_code(monkeypatch):
 
 
 def test_entry_list_without_opponents(monkeypatch):
+    monkeypatch.setattr(pairing_parser, "_parse_entry_table", lambda path: None)
     lines = ["Georgetown KM", "Michigan State FM"]
     monkeypatch.setattr(pairing_parser, "_extract_lines", lambda path: lines)
 
@@ -25,9 +31,11 @@ def test_entry_list_without_opponents(monkeypatch):
 
     assert len(entries) == 2
     assert all(e.opponent_school is None for e in entries)
+    assert all(e.debaters == [] for e in entries)
 
 
 def test_dedupes_repeated_entries(monkeypatch):
+    monkeypatch.setattr(pairing_parser, "_parse_entry_table", lambda path: None)
     lines = ["Georgetown KM", "Georgetown KM", "Georgetown KM vs Michigan FM"]
     monkeypatch.setattr(pairing_parser, "_extract_lines", lambda path: lines)
 
@@ -35,3 +43,22 @@ def test_dedupes_repeated_entries(monkeypatch):
 
     codes = [e.team_code for e in entries]
     assert codes.count("Georgetown KM") == 1
+
+
+def test_real_tabroom_entry_list_table():
+    """Ground-truth test against a real Tabroom 'fieldsort' entry-list PDF."""
+    entries = pairing_parser.parse_pairings_pdf(str(EXAMPLE_PDF))
+    by_school = {}
+    for e in entries:
+        by_school.setdefault(e.school_name, []).append(e)
+
+    assert len(entries) > 100
+    assert "Kentucky" in by_school
+
+    kentucky_cv = next(e for e in by_school["Kentucky"] if e.debaters == ["Coale", "Villarreal"])
+    assert kentucky_cv.team_code == "Kentucky CV"
+
+    # The tournament's own entry code ("Kentucky CV") deliberately does NOT
+    # match opencaselist's team code for the same team ("Kentucky CoVi") --
+    # debater last names are the key that matches across both systems.
+    assert kentucky_cv.team_code != "Kentucky CoVi"

@@ -63,6 +63,10 @@ class Team(Base):
     tournament_id: Mapped[int] = mapped_column(ForeignKey("tournaments.id"))
     school_name: Mapped[str] = mapped_column(String(255))
     team_code: Mapped[str] = mapped_column(String(64))
+    # Debater last names (e.g. "Arroyo & Mathews"), the reliable match key for
+    # finding this team on opencaselist -- that site's own team codes ("CoVi")
+    # don't line up with a tournament's entry codes ("CV"), but debater names do.
+    debaters: Mapped[str] = mapped_column(String(255), default="")
     opponent_school: Mapped[str | None] = mapped_column(String(255), nullable=True)
     opponent_team_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     round_label: Mapped[str | None] = mapped_column(String(64), nullable=True)

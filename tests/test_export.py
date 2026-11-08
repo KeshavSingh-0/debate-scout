@@ -6,7 +6,7 @@ def test_export_includes_team_and_classification():
     db = get_session()
     tournament = crud.get_or_create_tournament(db, "Test Tourney", "NDT-CEDA", "ndtceda99")
     team, _created = crud.get_or_create_team(
-        db, tournament, "Georgetown", "Georgetown KM", "Michigan", "Michigan FM", "Round 3"
+        db, tournament, "Georgetown", "Georgetown KM", ["Keeler", "Marsh"], "Michigan", "Michigan FM", "Round 3"
     )
     record = crud.create_aff_record(db, team)
     crud.update_aff_record(

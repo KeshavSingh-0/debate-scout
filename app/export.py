@@ -17,6 +17,7 @@ from .models import Tournament
 COLUMNS = [
     "School",
     "Team",
+    "Debaters",
     "Opponent School",
     "Opponent Team",
     "Round",
@@ -40,6 +41,7 @@ def _rows_for_tournament(tournament: Tournament) -> list[list[str]]:
                 [
                     team.school_name,
                     team.team_code,
+                    team.debaters,
                     team.opponent_school or "",
                     team.opponent_team_code or "",
                     team.round_label or "",
