@@ -17,11 +17,16 @@ Most of this is now ground-truthed against real saved pages from the site
     path=...">, svg[data-testid="preview"]) that's kept as the result's
     source_url so a person can open it to sanity-check the pick.
 
-The one part that's still unverified is the login form itself (no saved
-login page was available) -- `_login` below uses defensive, label/role
-based selectors as a best-effort first pass. If that's the step that fails,
-`ScrapeError` carries a screenshot path (saved next to the download dir)
-for a quick look at the real markup.
+  - The login form is also ground-truthed, from a saved copy of the logged-
+    out homepage: there is no separate /login route. The root URL itself
+    renders a Tabroom.com username/password form (#username, #password,
+    a submit button literally labeled "Login" that starts disabled until
+    both fields have a value) when logged out, and the caselist chooser
+    with a "Logout" link when logged in -- same URL, auth-dependent
+    content, which is also how `_login` below checks success.
+
+If a step still fails, `ScrapeError` carries a screenshot path (saved next
+to the download dir) for a quick look at the real markup at that point.
 
 Credentials are only ever held in memory for the lifetime of one tournament
 run (never written to the database or disk): `OpenCaselistSession` logs in
@@ -113,54 +118,57 @@ class OpenCaselistSession:
             await self._playwright.stop()
 
     async def _login(self) -> None:
+        """Ground-truthed against a real saved copy of the logged-out
+        homepage: there is no separate /login route -- the login form (a
+        Tabroom.com username/password, since opencaselist delegates auth to
+        Tabroom) is rendered at the root URL itself, and the same root URL
+        renders the caselist chooser with a "Logout" link once authenticated."""
         assert self._context is not None
         page = await self._context.new_page()
         try:
-            await page.goto(f"{BASE_URL}/login", timeout=NAV_TIMEOUT_MS)
+            await page.goto(f"{BASE_URL}/", timeout=NAV_TIMEOUT_MS)
 
             try:
-                username_field = page.get_by_label(re.compile("username|e-?mail", re.IGNORECASE)).first
-                await username_field.fill(self._username, timeout=NAV_TIMEOUT_MS)
-            except Exception:
-                try:
-                    await page.locator(
-                        "input[name='username'], input[type='email'], input[type='text']"
-                    ).first.fill(self._username, timeout=NAV_TIMEOUT_MS)
-                except Exception as exc:
-                    raise ScrapeError(
-                        "Could not find a username/email field on the opencaselist login page.",
-                        await _screenshot(page, self._download_dir, "login_username"),
-                    ) from exc
+                await page.locator("#username").fill(self._username, timeout=NAV_TIMEOUT_MS)
+            except Exception as exc:
+                raise ScrapeError(
+                    "Could not find the username field on the opencaselist homepage.",
+                    await _screenshot(page, self._download_dir, "login_username"),
+                ) from exc
 
             try:
-                password_field = page.get_by_label(re.compile("password", re.IGNORECASE)).first
-                await password_field.fill(self._password, timeout=NAV_TIMEOUT_MS)
-            except Exception:
-                try:
-                    await page.locator("input[type='password']").first.fill(
-                        self._password, timeout=NAV_TIMEOUT_MS
-                    )
-                except Exception as exc:
-                    raise ScrapeError(
-                        "Could not find a password field on the opencaselist login page.",
-                        await _screenshot(page, self._download_dir, "login_password"),
-                    ) from exc
+                await page.locator("#password").fill(self._password, timeout=NAV_TIMEOUT_MS)
+            except Exception as exc:
+                raise ScrapeError(
+                    "Could not find the password field on the opencaselist homepage.",
+                    await _screenshot(page, self._download_dir, "login_password"),
+                ) from exc
 
             try:
-                submit = page.get_by_role("button", name=re.compile("log.?in|sign.?in", re.IGNORECASE)).first
+                # The submit button starts disabled until both fields have a
+                # value; Playwright's click() auto-waits for it to become
+                # actionable (enabled) rather than failing immediately.
+                submit = page.get_by_role("button", name="Login", exact=True).first
                 await submit.click(timeout=NAV_TIMEOUT_MS)
             except Exception as exc:
                 raise ScrapeError(
-                    "Could not find/click the login submit button on opencaselist.",
+                    "Could not find/click the Login button on opencaselist.",
                     await _screenshot(page, self._download_dir, "login_submit"),
                 ) from exc
 
             await page.wait_for_load_state("networkidle", timeout=NAV_TIMEOUT_MS)
-            if page.url.rstrip("/").endswith("/login"):
-                raise ScrapeError(
-                    "Still on the login page after submitting -- check the opencaselist username/password.",
-                    await _screenshot(page, self._download_dir, "login_failed"),
-                )
+            try:
+                await page.get_by_role("link", name="Logout", exact=True).wait_for(timeout=NAV_TIMEOUT_MS)
+            except Exception as exc:
+                toast_text = ""
+                try:
+                    toast_text = (await page.locator(".Toastify").inner_text(timeout=1000)).strip()
+                except Exception:
+                    pass
+                detail = "Login did not succeed -- check the opencaselist/Tabroom username and password."
+                if toast_text:
+                    detail += f" Site said: {toast_text}"
+                raise ScrapeError(detail, await _screenshot(page, self._download_dir, "login_failed")) from exc
         finally:
             await page.close()
 
